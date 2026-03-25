@@ -15,6 +15,7 @@ import {
   User,
   AlertTriangle,
 } from "lucide-react";
+import { playNotificationSound } from "@/lib/notification-sound";
 import type { Order, OrderItem } from "@/types/database";
 
 interface KitchenOrder {
@@ -135,12 +136,7 @@ export default function POSKitchenPage() {
         (payload) => {
           // Play sound for new orders
           if (payload.eventType === "INSERT") {
-            try {
-              const audio = new Audio("/notification.mp3");
-              audio.play().catch(() => {});
-            } catch {
-              // ignore
-            }
+            playNotificationSound();
           }
           loadOrders();
         }

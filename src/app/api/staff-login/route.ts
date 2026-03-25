@@ -1,28 +1,29 @@
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { staffLoginSchema } from "@/lib/validations";
 import { NextResponse } from "next/server";
+import bcrypt from "bcryptjs";
 
 export async function POST(request: Request) {
   try {
-    const { pin, outletId } = await request.json();
+    const body = await request.json();
 
-    if (!pin || typeof pin !== "string" || pin.length < 4) {
+    // Validate input with Zod
+    const parsed = staffLoginSchema.safeParse(body);
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: "Invalid PIN" },
+        { error: parsed.error.issues[0]?.message || "Invalid input" },
         { status: 400 }
       );
     }
 
+    const { pin, outletId } = parsed.data;
+
     const supabase = createServerSupabaseClient();
 
-    // Find staff by PIN code
-    // If outletId is provided, also match by outlet's store
-    const query = supabase
-      .from("users")
-      .select("id, name, email, role, store_id, outlet_id, is_active")
-      .eq("pin_code", pin)
-      .eq("is_active", true);
-
-    const { data: staffMembers, error } = await query;
+    // Fetch all active users via RPC (bypasses RLS since user isn't authenticated yet)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: staffMembers, error } = await (supabase as any)
+      .rpc("verify_staff_pin", { pin_input: pin }) as { data: { id: string; name: string; email: string; role: string; store_id: string; outlet_id: string; is_active: boolean; pin_code: string }[] | null; error: { message: string } | null };
 
     if (error) {
       return NextResponse.json(
@@ -38,22 +39,32 @@ export async function POST(request: Request) {
       );
     }
 
-    // If multiple staff have the same PIN (shouldn't happen), take first
-    const staff = staffMembers[0];
+    // Find user by comparing PIN hash
+    const staff = staffMembers.find((member: { pin_code: string }) =>
+      bcrypt.compareSync(pin, member.pin_code)
+    );
 
-    // Get the outlet info
-    const outletQuery = outletId
-      ? supabase.from("outlets").select("id, name, store_id").eq("id", outletId).single()
-      : supabase.from("outlets").select("id, name, store_id").eq("store_id", staff.store_id).limit(1).single();
+    if (!staff) {
+      return NextResponse.json(
+        { error: "Invalid PIN or account inactive" },
+        { status: 401 }
+      );
+    }
 
-    const { data: outlet } = await outletQuery;
+    // Get the outlet info via RPC (bypasses RLS)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: outletRows } = await (supabase as any)
+      .rpc("get_staff_outlet", {
+        p_store_id: staff.store_id,
+        ...(outletId ? { p_outlet_id: outletId } : {}),
+      }) as { data: { id: string; name: string; store_id: string }[] | null; error: unknown };
+    const outlet = outletRows?.[0] || null;
 
-    // Get store info
-    const { data: store } = await supabase
-      .from("stores")
-      .select("id, name, business_model")
-      .eq("id", staff.store_id)
-      .single();
+    // Get store info via RPC (bypasses RLS)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: storeRows } = await (supabase as any)
+      .rpc("get_staff_store", { p_store_id: staff.store_id }) as { data: { id: string; name: string; business_model: string }[] | null; error: unknown };
+    const store = storeRows?.[0] || null;
 
     return NextResponse.json({
       staff: {

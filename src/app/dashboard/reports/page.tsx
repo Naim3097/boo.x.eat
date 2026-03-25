@@ -4,12 +4,14 @@ import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/hooks/use-store";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import {
   DollarSign,
   ShoppingCart,
   TrendingUp,
   Loader2,
   Calendar,
+  Download,
 } from "lucide-react";
 import type { Order } from "@/types/database";
 
@@ -25,21 +27,33 @@ interface TopItem {
   total_revenue: number;
 }
 
+function downloadCSV(filename: string, headers: string[], rows: string[][]) {
+  const csvContent = [
+    headers.join(","),
+    ...rows.map((row) =>
+      row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")
+    ),
+  ].join("\n");
+
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function ReportsPage() {
   const { outlet, loading: storeLoading } = useStore();
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<"today" | "7days" | "30days">("today");
 
-  // Stats
   const [totalOrders, setTotalOrders] = useState(0);
   const [totalRevenue, setTotalRevenue] = useState(0);
   const [avgOrderValue, setAvgOrderValue] = useState(0);
   const [completedOrders, setCompletedOrders] = useState(0);
-
-  // Top items
   const [topItems, setTopItems] = useState<TopItem[]>([]);
-
-  // Daily breakdown
   const [dailyData, setDailyData] = useState<DaySummary[]>([]);
 
   const loadReport = useCallback(async () => {
@@ -47,7 +61,6 @@ export default function ReportsPage() {
     setLoading(true);
     const supabase = createClient();
 
-    // Calculate date range
     const now = new Date();
     let startDate: Date;
     if (period === "today") {
@@ -58,7 +71,6 @@ export default function ReportsPage() {
       startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     }
 
-    // Fetch orders in range
     const { data: orders } = await supabase
       .from("orders")
       .select("*")
@@ -72,7 +84,6 @@ export default function ReportsPage() {
       return;
     }
 
-    // Calculate stats
     const completed = orders.filter((o) => o.status === "completed");
     const validOrders = orders.filter((o) => o.status !== "cancelled");
 
@@ -83,7 +94,6 @@ export default function ReportsPage() {
     setTotalRevenue(revenue);
     setAvgOrderValue(validOrders.length > 0 ? revenue / validOrders.length : 0);
 
-    // Daily breakdown
     const dailyMap = new Map<string, DaySummary>();
     for (const order of validOrders) {
       const date = new Date(order.created_at!).toLocaleDateString("en-MY", {
@@ -97,7 +107,6 @@ export default function ReportsPage() {
     }
     setDailyData(Array.from(dailyMap.values()));
 
-    // Top items - fetch order items for these orders
     if (validOrders.length > 0) {
       const orderIds = validOrders.map((o) => o.id);
       const { data: items } = await supabase
@@ -127,6 +136,19 @@ export default function ReportsPage() {
   useEffect(() => {
     if (outlet) loadReport();
   }, [outlet, loadReport]);
+
+  // CSV export functions (B9)
+  function exportDailySummary() {
+    const headers = ["Date", "Orders", "Revenue (RM)"];
+    const rows = dailyData.map((d) => [d.date, String(d.orders), d.revenue.toFixed(2)]);
+    downloadCSV(`daily-summary-${period}.csv`, headers, rows);
+  }
+
+  function exportSalesByItem() {
+    const headers = ["Item Name", "Quantity Sold", "Revenue (RM)"];
+    const rows = topItems.map((i) => [i.item_name, String(i.total_qty), i.total_revenue.toFixed(2)]);
+    downloadCSV(`sales-by-item-${period}.csv`, headers, rows);
+  }
 
   if (storeLoading || loading) {
     return (
@@ -170,9 +192,7 @@ export default function ReportsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{totalOrders}</div>
-            <p className="text-xs text-muted-foreground">
-              {completedOrders} completed
-            </p>
+            <p className="text-xs text-muted-foreground">{completedOrders} completed</p>
           </CardContent>
         </Card>
         <Card>
@@ -212,8 +232,14 @@ export default function ReportsPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Daily Breakdown */}
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base">Daily Breakdown</CardTitle>
+            {dailyData.length > 0 && (
+              <Button variant="outline" size="sm" onClick={exportDailySummary}>
+                <Download className="w-3.5 h-3.5 mr-1" />
+                CSV
+              </Button>
+            )}
           </CardHeader>
           <CardContent>
             {dailyData.length === 0 ? (
@@ -247,8 +273,14 @@ export default function ReportsPage() {
 
         {/* Top Items */}
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base">Top Items</CardTitle>
+            {topItems.length > 0 && (
+              <Button variant="outline" size="sm" onClick={exportSalesByItem}>
+                <Download className="w-3.5 h-3.5 mr-1" />
+                CSV
+              </Button>
+            )}
           </CardHeader>
           <CardContent>
             {topItems.length === 0 ? (

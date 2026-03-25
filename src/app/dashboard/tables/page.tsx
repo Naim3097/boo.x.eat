@@ -127,14 +127,23 @@ export default function TablesPage() {
         return;
       }
 
-      const { error } = await supabase
+      const { data: newTable, error } = await supabase
         .from("tables")
         .insert({
           outlet_id: outlet.id,
           table_number: tableNumber.trim(),
           capacity: parseInt(capacity) || 4,
-        });
+        })
+        .select("id")
+        .single();
       if (error) { toast.error(error.message); setSaving(false); return; }
+
+      // Persist QR code URL
+      if (newTable) {
+        const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
+        const qrUrl = `${baseUrl}/order/${outlet.id}/${newTable.id}`;
+        await supabase.from("tables").update({ qr_code_url: qrUrl }).eq("id", newTable.id);
+      }
       toast.success("Table created");
     }
 
@@ -195,8 +204,23 @@ export default function TablesPage() {
       return;
     }
 
-    const { error } = await supabase.from("tables").insert(newTables);
+    const { data: createdTables, error } = await supabase
+      .from("tables")
+      .insert(newTables)
+      .select("id");
     if (error) { toast.error(error.message); setBulkSaving(false); return; }
+
+    // Persist QR URLs for newly created tables
+    if (createdTables && createdTables.length > 0) {
+      const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
+      const updates = createdTables.map((t: { id: string }) => ({
+        id: t.id,
+        qr_code_url: `${baseUrl}/order/${outlet.id}/${t.id}`,
+      }));
+      for (const update of updates) {
+        await supabase.from("tables").update({ qr_code_url: update.qr_code_url }).eq("id", update.id);
+      }
+    }
 
     toast.success(`${newTables.length} tables created`);
     setBulkDialogOpen(false);
@@ -221,6 +245,10 @@ export default function TablesPage() {
       color: { dark: "#1a1a2e", light: "#ffffff" },
     });
     setQrDataUrl(dataUrl);
+
+    // Persist the order URL to the table record
+    const supabase = createClient();
+    await supabase.from("tables").update({ qr_code_url: url }).eq("id", table.id);
   }
 
   async function downloadQR(table: Table) {

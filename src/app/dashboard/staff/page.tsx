@@ -25,6 +25,7 @@ import {
   UserCircle,
 } from "lucide-react";
 import type { StaffUser } from "@/types/database";
+import bcrypt from "bcryptjs";
 
 type StaffRole = "owner" | "manager" | "cashier" | "kitchen" | "waiter";
 
@@ -74,7 +75,7 @@ export default function StaffPage() {
       setName(member.name);
       setEmail(member.email || "");
       setRole(member.role as StaffRole);
-      setPinCode(member.pin_code);
+      setPinCode(""); // Don't pre-fill hashed PIN; leave blank to keep current
     } else {
       setEditingStaff(null);
       setName("");
@@ -87,8 +88,10 @@ export default function StaffPage() {
   }
 
   async function saveStaff() {
-    if (!store || !name.trim() || !pinCode.trim()) return;
-    if (pinCode.length < 4) {
+    if (!store || !name.trim()) return;
+    // For new staff, PIN is required; for editing, PIN is optional (leave blank to keep current)
+    if (!editingStaff && !pinCode.trim()) return;
+    if (pinCode.trim() && pinCode.length < 4) {
       toast.error("PIN must be at least 4 digits");
       return;
     }
@@ -96,25 +99,24 @@ export default function StaffPage() {
     const supabase = createClient();
 
     if (editingStaff) {
+      const updatePayload: Record<string, unknown> = {
+        name: name.trim(),
+        email: email.trim() || null,
+        role,
+      };
+      // Only update PIN if a new one was entered
+      if (pinCode.trim()) {
+        updatePayload.pin_code = bcrypt.hashSync(pinCode.trim(), 10);
+      }
+
       const { error } = await supabase
         .from("users")
-        .update({
-          name: name.trim(),
-          email: email.trim() || null,
-          role,
-          pin_code: pinCode.trim(),
-        })
+        .update(updatePayload)
         .eq("id", editingStaff.id);
       if (error) { toast.error(error.message); setSaving(false); return; }
       toast.success("Staff updated");
     } else {
-      // Check for duplicate PIN
-      const duplicate = staff.some((s) => s.pin_code === pinCode.trim());
-      if (duplicate) {
-        toast.error("This PIN is already used by another staff member");
-        setSaving(false);
-        return;
-      }
+      const hashedPin = bcrypt.hashSync(pinCode.trim(), 10);
 
       const { error } = await supabase
         .from("users")
@@ -123,7 +125,7 @@ export default function StaffPage() {
           name: name.trim(),
           email: email.trim() || null,
           role,
-          pin_code: pinCode.trim(),
+          pin_code: hashedPin,
         });
       if (error) { toast.error(error.message); setSaving(false); return; }
       toast.success("Staff added");
@@ -225,7 +227,7 @@ export default function StaffPage() {
                           {roleConfig.label}
                         </span>
                         <span className="text-xs text-gray-400 font-mono">
-                          PIN: {member.pin_code}
+                          PIN: ••••••
                         </span>
                       </div>
                     </div>
@@ -236,13 +238,15 @@ export default function StaffPage() {
                     <div className="flex items-center gap-2 mt-3 pt-3 border-t">
                       <button
                         onClick={() => toggleActive(member)}
-                        className={`text-xs font-medium px-2 py-1 rounded ${
-                          isActive
-                            ? "bg-green-50 text-green-700"
-                            : "bg-red-50 text-red-600"
-                        }`}
+                        className="flex items-center gap-2 group"
+                        title={isActive ? "Click to deactivate" : "Click to activate"}
                       >
-                        {isActive ? "Active" : "Inactive"}
+                        <div className={`relative w-9 h-5 rounded-full transition-colors ${isActive ? "bg-green-500" : "bg-gray-300"}`}>
+                          <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${isActive ? "left-[18px]" : "left-0.5"}`} />
+                        </div>
+                        <span className={`text-xs font-medium ${isActive ? "text-green-700" : "text-red-600"}`}>
+                          {isActive ? "Active" : "Inactive"}
+                        </span>
                       </button>
                       <div className="flex-1" />
                       <button
@@ -307,11 +311,11 @@ export default function StaffPage() {
               </select>
             </div>
             <div className="space-y-2">
-              <Label>PIN Code *</Label>
+              <Label>{editingStaff ? "New PIN Code" : "PIN Code *"}</Label>
               <Input
                 value={pinCode}
                 onChange={(e) => setPinCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                placeholder="6-digit PIN"
+                placeholder={editingStaff ? "Leave blank to keep current PIN" : "6-digit PIN"}
                 maxLength={6}
               />
               <p className="text-xs text-gray-400">
@@ -320,7 +324,7 @@ export default function StaffPage() {
             </div>
             <div className="flex justify-end gap-3">
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-              <Button onClick={saveStaff} disabled={saving || !name.trim() || !pinCode.trim()}>
+              <Button onClick={saveStaff} disabled={saving || !name.trim() || (!editingStaff && !pinCode.trim())}>
                 {saving ? "Saving..." : "Save"}
               </Button>
             </div>

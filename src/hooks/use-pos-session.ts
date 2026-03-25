@@ -28,12 +28,11 @@ export function usePOSSession() {
         return;
       }
       setSession(parsed);
+      setLoading(false);
     } catch {
       router.replace("/pos");
       return;
     }
-
-    setLoading(false);
   }, [router]);
 
   function logout() {

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/hooks/use-store";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
@@ -11,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import {
   Clock,
@@ -21,10 +23,18 @@ import {
   ShoppingCart,
   RefreshCw,
   Eye,
+  Ban,
+  ChevronLeft,
+  ChevronRight,
+  Package,
+  Truck,
+  UtensilsCrossed,
 } from "lucide-react";
+import { playNotificationSound } from "@/lib/notification-sound";
 import type { Order, OrderItem } from "@/types/database";
 
 type OrderStatus = "pending" | "preparing" | "ready" | "completed" | "cancelled";
+type OrderType = "dine_in" | "takeaway" | "delivery";
 
 interface OrderWithItems extends Order {
   order_items: OrderItem[];
@@ -42,25 +52,75 @@ const STATUS_CONFIG: Record<
   cancelled: { label: "Cancelled", color: "text-red-500", bg: "bg-red-50 border-red-200", icon: XCircle },
 };
 
+const ORDER_TYPE_CONFIG: Record<OrderType, { label: string; icon: React.ElementType; color: string }> = {
+  dine_in: { label: "Dine In", icon: UtensilsCrossed, color: "bg-blue-50 text-blue-700" },
+  takeaway: { label: "Takeaway", icon: Package, color: "bg-orange-50 text-orange-700" },
+  delivery: { label: "Delivery", icon: Truck, color: "bg-purple-50 text-purple-700" },
+};
+
 const STATUS_FLOW: OrderStatus[] = ["pending", "preparing", "ready", "completed"];
+const PAGE_SIZE = 30;
 
 export default function OrdersPage() {
   const { outlet, loading: storeLoading } = useStore();
   const [orders, setOrders] = useState<OrderWithItems[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<OrderStatus | "all">("all");
+  const [filterType, setFilterType] = useState<OrderType | "all">("all");
   const [detailOrder, setDetailOrder] = useState<OrderWithItems | null>(null);
+
+  // Date range filter (B7)
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+
+  // Pagination (B7)
+  const [page, setPage] = useState(0);
+
+  // Cancel dialog (B4)
+  const [cancelOrderId, setCancelOrderId] = useState<string | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+
+  // Refund dialog (B4)
+  const [refundOrderId, setRefundOrderId] = useState<string | null>(null);
+
+  // Audio notification (B3)
+  const prevOrderCountRef = useRef<number>(0);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+
+  // Request notification permission on mount (B3)
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "granted") {
+        setNotificationsEnabled(true);
+      } else if (Notification.permission !== "denied") {
+        Notification.requestPermission().then((p) => {
+          if (p === "granted") setNotificationsEnabled(true);
+        });
+      }
+    }
+  }, []);
 
   const loadOrders = useCallback(async () => {
     if (!outlet) return;
     const supabase = createClient();
 
-    const { data, error } = await supabase
+    let query = supabase
       .from("orders")
       .select("*, order_items(*), tables(table_number)")
       .eq("outlet_id", outlet.id)
-      .order("created_at", { ascending: false })
-      .limit(100);
+      .order("created_at", { ascending: false });
+
+    // Date range filter
+    if (dateFrom) {
+      query = query.gte("created_at", new Date(dateFrom).toISOString());
+    }
+    if (dateTo) {
+      const end = new Date(dateTo);
+      end.setHours(23, 59, 59, 999);
+      query = query.lte("created_at", end.toISOString());
+    }
+
+    const { data, error } = await query.range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
 
     if (error) {
       toast.error("Failed to load orders");
@@ -68,15 +128,32 @@ export default function OrdersPage() {
       return;
     }
 
-    setOrders((data as unknown as OrderWithItems[]) || []);
+    const newOrders = (data as unknown as OrderWithItems[]) || [];
+
+    // Check for new orders and play sound (B3)
+    if (prevOrderCountRef.current > 0 && newOrders.length > prevOrderCountRef.current) {
+      playNotificationSound();
+
+      if (notificationsEnabled) {
+        try {
+          new Notification("New Order!", {
+            body: `Order #${newOrders[0]?.order_number} received`,
+            icon: "/favicon.ico",
+          });
+        } catch { /* ignore */ }
+      }
+    }
+    prevOrderCountRef.current = newOrders.length;
+
+    setOrders(newOrders);
     setLoading(false);
-  }, [outlet]);
+  }, [outlet, dateFrom, dateTo, page, notificationsEnabled]);
 
   useEffect(() => {
     if (outlet) loadOrders();
   }, [outlet, loadOrders]);
 
-  // Real-time subscription
+  // Real-time subscription (B3 - with sound)
   useEffect(() => {
     if (!outlet) return;
     const supabase = createClient();
@@ -91,8 +168,20 @@ export default function OrdersPage() {
           table: "orders",
           filter: `outlet_id=eq.${outlet.id}`,
         },
-        () => {
-          // Reload orders on any change
+        (payload) => {
+          if (payload.eventType === "INSERT") {
+            playNotificationSound();
+
+            if (notificationsEnabled) {
+              try {
+                const newOrder = payload.new as Order;
+                new Notification("New Order!", {
+                  body: `Order #${newOrder.order_number} received`,
+                  icon: "/favicon.ico",
+                });
+              } catch { /* ignore */ }
+            }
+          }
           loadOrders();
         }
       )
@@ -101,7 +190,7 @@ export default function OrdersPage() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [outlet, loadOrders]);
+  }, [outlet, loadOrders, notificationsEnabled]);
 
   async function updateOrderStatus(orderId: string, newStatus: OrderStatus) {
     const supabase = createClient();
@@ -118,10 +207,55 @@ export default function OrdersPage() {
     toast.success(`Order ${newStatus}`);
     loadOrders();
 
-    // Update detail view if open
     if (detailOrder?.id === orderId) {
       setDetailOrder((prev) => prev ? { ...prev, status: newStatus } : null);
     }
+  }
+
+  // Cancel with reason (B4)
+  async function cancelOrder() {
+    if (!cancelOrderId) return;
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("orders")
+      .update({
+        status: "cancelled",
+        notes: cancelReason ? `Cancelled: ${cancelReason}` : "Cancelled",
+      })
+      .eq("id", cancelOrderId);
+
+    if (error) {
+      toast.error("Failed to cancel order");
+      return;
+    }
+
+    toast.success("Order cancelled");
+    setCancelOrderId(null);
+    setCancelReason("");
+    loadOrders();
+
+    if (detailOrder?.id === cancelOrderId) {
+      setDetailOrder(null);
+    }
+  }
+
+  // Refund (B4)
+  async function refundOrder() {
+    if (!refundOrderId) return;
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("orders")
+      .update({ payment_status: "refunded" })
+      .eq("id", refundOrderId);
+
+    if (error) {
+      toast.error("Failed to record refund");
+      return;
+    }
+
+    toast.success("Refund recorded");
+    setRefundOrderId(null);
+    loadOrders();
   }
 
   function getNextStatus(current: OrderStatus): OrderStatus | null {
@@ -145,10 +279,14 @@ export default function OrdersPage() {
     return `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
   }
 
-  // Filter orders
-  const filteredOrders = filterStatus === "all"
-    ? orders
-    : orders.filter((o) => o.status === filterStatus);
+  // Filter orders by status and type
+  let filteredOrders = orders;
+  if (filterStatus !== "all") {
+    filteredOrders = filteredOrders.filter((o) => o.status === filterStatus);
+  }
+  if (filterType !== "all") {
+    filteredOrders = filteredOrders.filter((o) => o.order_type === filterType);
+  }
 
   // Count by status
   const counts: Record<string, number> = { all: orders.length };
@@ -181,7 +319,47 @@ export default function OrdersPage() {
         </Button>
       </div>
 
-      {/* Filter Tabs */}
+      {/* Filters Row (B7 + B8) */}
+      <div className="flex flex-wrap gap-3 items-end">
+        <div>
+          <label className="text-xs text-gray-500 mb-1 block">From</label>
+          <Input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => { setDateFrom(e.target.value); setPage(0); }}
+            className="w-40"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-gray-500 mb-1 block">To</label>
+          <Input
+            type="date"
+            value={dateTo}
+            onChange={(e) => { setDateTo(e.target.value); setPage(0); }}
+            className="w-40"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-gray-500 mb-1 block">Order Type</label>
+          <select
+            value={filterType}
+            onChange={(e) => setFilterType(e.target.value as OrderType | "all")}
+            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="all">All Types</option>
+            <option value="dine_in">Dine In</option>
+            <option value="takeaway">Takeaway</option>
+            <option value="delivery">Delivery</option>
+          </select>
+        </div>
+        {(dateFrom || dateTo) && (
+          <Button variant="ghost" size="sm" onClick={() => { setDateFrom(""); setDateTo(""); setPage(0); }}>
+            Clear dates
+          </Button>
+        )}
+      </div>
+
+      {/* Status Filter Tabs */}
       <div className="flex gap-2 overflow-x-auto">
         {(["all", "pending", "preparing", "ready", "completed", "cancelled"] as const).map(
           (status) => {
@@ -228,6 +406,9 @@ export default function OrdersPage() {
             const config = STATUS_CONFIG[status];
             const StatusIcon = config.icon;
             const nextStatus = getNextStatus(status);
+            const orderType = (order.order_type || "dine_in") as OrderType;
+            const typeConfig = ORDER_TYPE_CONFIG[orderType];
+            const TypeIcon = typeConfig?.icon || UtensilsCrossed;
 
             return (
               <Card key={order.id} className={`border-2 ${config.bg}`}>
@@ -244,20 +425,41 @@ export default function OrdersPage() {
                           {config.label}
                         </span>
                       </div>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        {order.tables
-                          ? `Table ${(order.tables as { table_number: string }).table_number}`
-                          : order.order_type}
-                        {" · "}
-                        {formatTime(order.created_at)}
-                        {" · "}
-                        <span className="font-medium">{timeAgo(order.created_at)}</span>
-                      </p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <p className="text-xs text-gray-500">
+                          {order.tables
+                            ? `Table ${(order.tables as { table_number: string }).table_number}`
+                            : order.order_type?.replace("_", " ")}
+                          {" · "}
+                          {formatTime(order.created_at)}
+                          {" · "}
+                          <span className="font-medium">{timeAgo(order.created_at)}</span>
+                        </p>
+                        {/* Order type badge (B8) */}
+                        {orderType !== "dine_in" && typeConfig && (
+                          <span className={`flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded ${typeConfig.color}`}>
+                            <TypeIcon className="w-3 h-3" />
+                            {typeConfig.label}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <span className="font-bold text-primary-700">
                       RM {Number(order.total).toFixed(2)}
                     </span>
                   </div>
+
+                  {/* Payment status badge */}
+                  {order.payment_status === "refunded" && (
+                    <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700 mb-2">
+                      Refunded
+                    </span>
+                  )}
+                  {order.payment_status === "paid" && (
+                    <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-green-100 text-green-700 mb-2">
+                      Paid
+                    </span>
+                  )}
 
                   {/* Order items preview */}
                   <div className="space-y-1 mb-3">
@@ -295,7 +497,7 @@ export default function OrdersPage() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => updateOrderStatus(order.id, "cancelled")}
+                        onClick={() => setCancelOrderId(order.id)}
                         className="text-xs text-red-500 hover:text-red-700 hover:bg-red-50"
                       >
                         Cancel
@@ -317,6 +519,31 @@ export default function OrdersPage() {
               </Card>
             );
           })}
+        </div>
+      )}
+
+      {/* Pagination (B7) */}
+      {orders.length > 0 && (
+        <div className="flex items-center justify-center gap-4">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            <ChevronLeft className="w-4 h-4 mr-1" />
+            Previous
+          </Button>
+          <span className="text-sm text-gray-500">Page {page + 1}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={orders.length < PAGE_SIZE}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next
+            <ChevronRight className="w-4 h-4 ml-1" />
+          </Button>
         </div>
       )}
 
@@ -343,6 +570,9 @@ export default function OrdersPage() {
                     </span>
                   );
                 })()}
+                {detailOrder.payment_status === "refunded" && (
+                  <span className="text-xs font-medium px-2 py-1 rounded-full bg-red-100 text-red-700">Refunded</span>
+                )}
               </div>
 
               {/* Info */}
@@ -367,7 +597,27 @@ export default function OrdersPage() {
                   <p className="text-gray-400 text-xs">Total</p>
                   <p className="font-bold text-primary-700">RM {Number(detailOrder.total).toFixed(2)}</p>
                 </div>
+                {detailOrder.customer_phone && (
+                  <div>
+                    <p className="text-gray-400 text-xs">Phone</p>
+                    <p className="font-medium">{detailOrder.customer_phone}</p>
+                  </div>
+                )}
+                {detailOrder.delivery_address && (
+                  <div className="col-span-2">
+                    <p className="text-gray-400 text-xs">Delivery Address</p>
+                    <p className="font-medium">{detailOrder.delivery_address}</p>
+                  </div>
+                )}
               </div>
+
+              {/* Notes / cancel reason */}
+              {detailOrder.notes && (
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-400 mb-1">Notes</p>
+                  <p className="text-sm">{detailOrder.notes}</p>
+                </div>
+              )}
 
               {/* Items */}
               <div>
@@ -378,6 +628,14 @@ export default function OrdersPage() {
                       <div>
                         <span className="font-medium">{item.quantity}x</span>{" "}
                         {item.item_name}
+                        {item.variants_json && (
+                          <p className="text-xs text-gray-400">
+                            {(Array.isArray(item.variants_json) ? item.variants_json as Array<Record<string, unknown>> : [])
+                              .map((v) => String(v.name || ""))
+                              .filter(Boolean)
+                              .join(", ")}
+                          </p>
+                        )}
                         {item.special_instructions && (
                           <p className="text-xs text-primary-600">
                             Note: {item.special_instructions}
@@ -411,42 +669,111 @@ export default function OrdersPage() {
               </div>
 
               {/* Actions */}
-              {(() => {
-                const s = (detailOrder.status || "pending") as OrderStatus;
-                const next = getNextStatus(s);
-                if (!next && s !== "cancelled") return null;
-                return (
-                  <div className="flex gap-2">
-                    {s !== "cancelled" && s !== "completed" && (
-                      <Button
-                        variant="outline"
-                        className="flex-1 text-red-500 border-red-200 hover:bg-red-50"
-                        onClick={() => {
-                          updateOrderStatus(detailOrder.id, "cancelled");
-                          setDetailOrder(null);
-                        }}
-                      >
-                        Cancel Order
-                      </Button>
-                    )}
-                    {next && (
-                      <Button
-                        className="flex-1 bg-gradient-to-r from-primary-700 to-primary-500"
-                        onClick={() => {
-                          updateOrderStatus(detailOrder.id, next);
-                          setDetailOrder(null);
-                        }}
-                      >
-                        {next === "preparing" && "Start Preparing"}
-                        {next === "ready" && "Mark Ready"}
-                        {next === "completed" && "Complete Order"}
-                      </Button>
-                    )}
-                  </div>
-                );
-              })()}
+              <div className="flex gap-2">
+                {(detailOrder.status === "completed" || detailOrder.status === "cancelled") &&
+                  detailOrder.payment_status !== "refunded" &&
+                  detailOrder.payment_status === "paid" && (
+                  <Button
+                    variant="outline"
+                    className="flex-1 text-red-500 border-red-200 hover:bg-red-50"
+                    onClick={() => {
+                      setRefundOrderId(detailOrder.id);
+                      setDetailOrder(null);
+                    }}
+                  >
+                    <Ban className="w-4 h-4 mr-1" />
+                    Refund
+                  </Button>
+                )}
+                {detailOrder.status !== "cancelled" && detailOrder.status !== "completed" && (
+                  <Button
+                    variant="outline"
+                    className="flex-1 text-red-500 border-red-200 hover:bg-red-50"
+                    onClick={() => {
+                      setCancelOrderId(detailOrder.id);
+                      setDetailOrder(null);
+                    }}
+                  >
+                    Cancel Order
+                  </Button>
+                )}
+                {(() => {
+                  const s = (detailOrder.status || "pending") as OrderStatus;
+                  const next = getNextStatus(s);
+                  if (!next) return null;
+                  return (
+                    <Button
+                      className="flex-1 bg-gradient-to-r from-primary-700 to-primary-500"
+                      onClick={() => {
+                        updateOrderStatus(detailOrder.id, next);
+                        setDetailOrder(null);
+                      }}
+                    >
+                      {next === "preparing" && "Start Preparing"}
+                      {next === "ready" && "Mark Ready"}
+                      {next === "completed" && "Complete Order"}
+                    </Button>
+                  );
+                })()}
+              </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel Order Dialog (B4) */}
+      <Dialog open={!!cancelOrderId} onOpenChange={() => { setCancelOrderId(null); setCancelReason(""); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Cancel Order</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-500">Please provide a reason for cancellation (optional).</p>
+            <Textarea
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              placeholder="e.g. Customer requested, out of stock..."
+              rows={3}
+            />
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => { setCancelOrderId(null); setCancelReason(""); }}
+              >
+                Keep Order
+              </Button>
+              <Button
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                onClick={cancelOrder}
+              >
+                Cancel Order
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Refund Dialog (B4) */}
+      <Dialog open={!!refundOrderId} onOpenChange={() => setRefundOrderId(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Record Refund</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-500">Are you sure you want to record a refund for this order?</p>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setRefundOrderId(null)}>
+                Cancel
+              </Button>
+              <Button
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                onClick={refundOrder}
+              >
+                Record Refund
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

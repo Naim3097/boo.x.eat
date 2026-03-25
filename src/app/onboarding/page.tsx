@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { createClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
 import { QrCode, ClipboardList, ArrowRight, ArrowLeft, Store, MapPin, Utensils } from "lucide-react";
+import bcrypt from "bcryptjs";
 
 type BusinessModel = "qr_ordering" | "manual_entry";
 
@@ -78,7 +79,7 @@ export default function OnboardingPage() {
           auth_id: user.id,
           name: user.user_metadata?.full_name || user.email || "Owner",
           email: user.email,
-          pin_code: "000000", // Default PIN, owner should change later
+          pin_code: bcrypt.hashSync("000000", 10), // Default PIN, owner should change later
           role: "owner",
         });
 

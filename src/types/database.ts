@@ -191,6 +191,7 @@ export type Database = {
         Row: {
           created_at: string | null
           customer_phone: string | null
+          delivery_address: string | null
           id: string
           notes: string | null
           order_number: string
@@ -209,6 +210,7 @@ export type Database = {
         Insert: {
           created_at?: string | null
           customer_phone?: string | null
+          delivery_address?: string | null
           id?: string
           notes?: string | null
           order_number: string
@@ -227,6 +229,7 @@ export type Database = {
         Update: {
           created_at?: string | null
           customer_phone?: string | null
+          delivery_address?: string | null
           id?: string
           notes?: string | null
           order_number?: string
@@ -314,6 +317,7 @@ export type Database = {
           owner_id: string | null
           subscription_status: string | null
           subscription_tier: string | null
+          tax_rate: number | null
           updated_at: string | null
         }
         Insert: {
@@ -326,6 +330,7 @@ export type Database = {
           owner_id?: string | null
           subscription_status?: string | null
           subscription_tier?: string | null
+          tax_rate?: number | null
           updated_at?: string | null
         }
         Update: {
@@ -338,6 +343,7 @@ export type Database = {
           owner_id?: string | null
           subscription_status?: string | null
           subscription_tier?: string | null
+          tax_rate?: number | null
           updated_at?: string | null
         }
         Relationships: []
