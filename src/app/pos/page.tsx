@@ -57,14 +57,14 @@ export default function POSLoginPage() {
 
       toast.success(`Welcome, ${session.staff.name}!`);
 
-      // Route based on role
+      // Route based on role and business model
       const role = session.staff.role;
+      const businessModel = session.store?.business_model;
       if (role === "kitchen") {
         router.push("/pos/kitchen");
-      } else if (role === "owner" || role === "manager" || role === "cashier") {
-        router.push("/pos/orders");
+      } else if (businessModel === "manual_entry") {
+        router.push("/pos/cashier");
       } else {
-        // waiter
         router.push("/pos/orders");
       }
     } catch {
@@ -100,8 +100,11 @@ export default function POSLoginPage() {
             sessionStorage.setItem("pos_session", JSON.stringify(data));
             toast.success(`Welcome, ${data.staff.name}!`);
             const role = data.staff.role;
+            const bm = data.store?.business_model;
             if (role === "kitchen") {
               router.push("/pos/kitchen");
+            } else if (bm === "manual_entry") {
+              router.push("/pos/cashier");
             } else {
               router.push("/pos/orders");
             }

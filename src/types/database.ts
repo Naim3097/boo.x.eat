@@ -493,6 +493,258 @@ export type Database = {
           },
         ]
       }
+      subscription_tiers: {
+        Row: {
+          id: string
+          name: string
+          max_outlets: number
+          max_staff: number
+          has_inventory: boolean
+          has_manual_entry: boolean
+          has_advanced_reports: boolean
+          has_multi_outlet: boolean
+          price: number
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          name: string
+          max_outlets?: number
+          max_staff?: number
+          has_inventory?: boolean
+          has_manual_entry?: boolean
+          has_advanced_reports?: boolean
+          has_multi_outlet?: boolean
+          price?: number
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          name?: string
+          max_outlets?: number
+          max_staff?: number
+          has_inventory?: boolean
+          has_manual_entry?: boolean
+          has_advanced_reports?: boolean
+          has_multi_outlet?: boolean
+          price?: number
+          created_at?: string | null
+        }
+        Relationships: []
+      }
+      outlet_menu_overrides: {
+        Row: {
+          id: string
+          outlet_id: string
+          menu_item_id: string
+          is_available: boolean
+          price_override: number | null
+          created_at: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          id?: string
+          outlet_id: string
+          menu_item_id: string
+          is_available?: boolean
+          price_override?: number | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          outlet_id?: string
+          menu_item_id?: string
+          is_available?: boolean
+          price_override?: number | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "outlet_menu_overrides_outlet_id_fkey"
+            columns: ["outlet_id"]
+            isOneToOne: false
+            referencedRelation: "outlets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "outlet_menu_overrides_menu_item_id_fkey"
+            columns: ["menu_item_id"]
+            isOneToOne: false
+            referencedRelation: "menu_items"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      inventory_items: {
+        Row: {
+          id: string
+          outlet_id: string
+          name: string
+          sku: string | null
+          unit: string
+          current_stock: number
+          low_stock_threshold: number
+          cost_per_unit: number | null
+          is_active: boolean | null
+          created_at: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          id?: string
+          outlet_id: string
+          name: string
+          sku?: string | null
+          unit?: string
+          current_stock?: number
+          low_stock_threshold?: number
+          cost_per_unit?: number | null
+          is_active?: boolean | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          outlet_id?: string
+          name?: string
+          sku?: string | null
+          unit?: string
+          current_stock?: number
+          low_stock_threshold?: number
+          cost_per_unit?: number | null
+          is_active?: boolean | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_items_outlet_id_fkey"
+            columns: ["outlet_id"]
+            isOneToOne: false
+            referencedRelation: "outlets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      inventory_transactions: {
+        Row: {
+          id: string
+          inventory_item_id: string
+          type: string
+          quantity: number
+          notes: string | null
+          created_by: string | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          inventory_item_id: string
+          type: string
+          quantity: number
+          notes?: string | null
+          created_by?: string | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          inventory_item_id?: string
+          type?: string
+          quantity?: number
+          notes?: string | null
+          created_by?: string | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_transactions_inventory_item_id_fkey"
+            columns: ["inventory_item_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_items"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      menu_item_ingredients: {
+        Row: {
+          id: string
+          menu_item_id: string
+          inventory_item_id: string
+          quantity_used: number
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          menu_item_id: string
+          inventory_item_id: string
+          quantity_used?: number
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          menu_item_id?: string
+          inventory_item_id?: string
+          quantity_used?: number
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "menu_item_ingredients_menu_item_id_fkey"
+            columns: ["menu_item_id"]
+            isOneToOne: false
+            referencedRelation: "menu_items"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "menu_item_ingredients_inventory_item_id_fkey"
+            columns: ["inventory_item_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_items"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      refunds: {
+        Row: {
+          id: string
+          order_id: string
+          amount: number
+          reason: string
+          refund_type: string
+          refunded_items: Json | null
+          processed_by: string | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          order_id: string
+          amount: number
+          reason: string
+          refund_type?: string
+          refunded_items?: Json | null
+          processed_by?: string | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          order_id?: string
+          amount?: number
+          reason?: string
+          refund_type?: string
+          refunded_items?: Json | null
+          processed_by?: string | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "refunds_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: Record<string, never>
     Functions: Record<string, never>
@@ -537,3 +789,69 @@ export type OrderUpdate = Database["public"]["Tables"]["orders"]["Update"];
 export type OrderItem = Database["public"]["Tables"]["order_items"]["Row"];
 export type OrderItemInsert = Database["public"]["Tables"]["order_items"]["Insert"];
 export type OrderItemUpdate = Database["public"]["Tables"]["order_items"]["Update"];
+
+// Phase 2 types (tables created via migrations)
+export interface SubscriptionTier {
+  id: string;
+  name: string;
+  max_outlets: number;
+  max_staff: number;
+  has_inventory: boolean;
+  has_manual_entry: boolean;
+  has_advanced_reports: boolean;
+  has_multi_outlet: boolean;
+  price: number;
+  created_at: string | null;
+}
+
+export interface OutletMenuOverride {
+  id: string;
+  outlet_id: string;
+  menu_item_id: string;
+  is_available: boolean;
+  price_override: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface InventoryItem {
+  id: string;
+  outlet_id: string;
+  name: string;
+  sku: string | null;
+  unit: string;
+  current_stock: number;
+  low_stock_threshold: number;
+  cost_per_unit: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface InventoryTransaction {
+  id: string;
+  inventory_item_id: string;
+  type: string;
+  quantity: number;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string | null;
+}
+
+export interface MenuItemIngredient {
+  id: string;
+  menu_item_id: string;
+  inventory_item_id: string;
+  quantity_used: number;
+  created_at: string | null;
+}
+
+export interface Refund {
+  id: string;
+  order_id: string;
+  amount: number;
+  reason: string;
+  refund_type: string;
+  refunded_items: Json | null;
+  processed_by: string | null;
+  created_at: string | null;
+}

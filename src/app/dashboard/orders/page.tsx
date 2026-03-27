@@ -62,7 +62,7 @@ const STATUS_FLOW: OrderStatus[] = ["pending", "preparing", "ready", "completed"
 const PAGE_SIZE = 30;
 
 export default function OrdersPage() {
-  const { outlet, loading: storeLoading } = useStore();
+  const { outlet, outlets, loading: storeLoading } = useStore();
   const [orders, setOrders] = useState<OrderWithItems[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<OrderStatus | "all">("all");
@@ -80,8 +80,12 @@ export default function OrdersPage() {
   const [cancelOrderId, setCancelOrderId] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
 
-  // Refund dialog (B4)
-  const [refundOrderId, setRefundOrderId] = useState<string | null>(null);
+  // Refund dialog (enhanced)
+  const [refundOrder, setRefundOrder] = useState<OrderWithItems | null>(null);
+  const [refundType, setRefundType] = useState<"full" | "partial">("full");
+  const [refundReason, setRefundReason] = useState("");
+  const [refundSelectedItems, setRefundSelectedItems] = useState<Set<string>>(new Set());
+  const [_refundOrderId, _setRefundOrderId] = useState<string | null>(null);
 
   // Audio notification (B3)
   const prevOrderCountRef = useRef<number>(0);
@@ -100,15 +104,24 @@ export default function OrdersPage() {
     }
   }, []);
 
+  const outletNameMap = new Map(outlets.map((o) => [o.id, o.name]));
+  const isConsolidated = !outlet && outlets.length > 1;
+
   const loadOrders = useCallback(async () => {
-    if (!outlet) return;
+    if (!outlet && outlets.length === 0) return;
     const supabase = createClient();
 
     let query = supabase
       .from("orders")
       .select("*, order_items(*), tables(table_number)")
-      .eq("outlet_id", outlet.id)
       .order("created_at", { ascending: false });
+
+    if (outlet) {
+      query = query.eq("outlet_id", outlet.id);
+    } else {
+      const outletIds = outlets.map((o) => o.id);
+      if (outletIds.length > 0) query = query.in("outlet_id", outletIds);
+    }
 
     // Date range filter
     if (dateFrom) {
@@ -147,11 +160,11 @@ export default function OrdersPage() {
 
     setOrders(newOrders);
     setLoading(false);
-  }, [outlet, dateFrom, dateTo, page, notificationsEnabled]);
+  }, [outlet, outlets, dateFrom, dateTo, page, notificationsEnabled]);
 
   useEffect(() => {
-    if (outlet) loadOrders();
-  }, [outlet, loadOrders]);
+    if (outlet || outlets.length > 0) loadOrders();
+  }, [outlet, outlets, loadOrders]);
 
   // Real-time subscription (B3 - with sound)
   useEffect(() => {
@@ -239,22 +252,60 @@ export default function OrdersPage() {
     }
   }
 
-  // Refund (B4)
-  async function refundOrder() {
-    if (!refundOrderId) return;
-    const supabase = createClient();
-    const { error } = await supabase
-      .from("orders")
-      .update({ payment_status: "refunded" })
-      .eq("id", refundOrderId);
+  // Enhanced Refund
+  function openRefundDialog(order: OrderWithItems) {
+    setRefundOrder(order);
+    setRefundType("full");
+    setRefundReason("");
+    setRefundSelectedItems(new Set());
+  }
 
-    if (error) {
-      toast.error("Failed to record refund");
+  function getRefundAmount(): number {
+    if (!refundOrder) return 0;
+    if (refundType === "full") return Number(refundOrder.total);
+    return refundOrder.order_items
+      .filter((item) => refundSelectedItems.has(item.id))
+      .reduce((sum, item) => sum + Number(item.subtotal), 0);
+  }
+
+  async function processRefund() {
+    if (!refundOrder || !refundReason.trim()) {
+      toast.error("Please provide a reason");
+      return;
+    }
+    const amount = getRefundAmount();
+    if (amount <= 0) {
+      toast.error("Refund amount must be greater than 0");
       return;
     }
 
-    toast.success("Refund recorded");
-    setRefundOrderId(null);
+    const supabase = createClient();
+
+    // Create refund record
+    const refundPayload = {
+      order_id: refundOrder.id,
+      amount,
+      reason: refundReason.trim(),
+      refund_type: refundType,
+      refunded_items: refundType === "partial"
+        ? refundOrder.order_items
+            .filter((item) => refundSelectedItems.has(item.id))
+            .map((item) => ({ id: item.id, name: item.item_name, qty: item.quantity, amount: Number(item.subtotal) }))
+        : null,
+    };
+
+    const { error: refundErr } = await supabase.from("refunds").insert(refundPayload);
+    if (refundErr) { toast.error(refundErr.message); return; }
+
+    // Update order payment status
+    const { error } = await supabase
+      .from("orders")
+      .update({ payment_status: "refunded" })
+      .eq("id", refundOrder.id);
+    if (error) { toast.error(error.message); return; }
+
+    toast.success(`Refund of RM ${amount.toFixed(2)} processed`);
+    setRefundOrder(null);
     loadOrders();
   }
 
@@ -435,11 +486,17 @@ export default function OrdersPage() {
                           {" · "}
                           <span className="font-medium">{timeAgo(order.created_at)}</span>
                         </p>
-                        {/* Order type badge (B8) */}
+                        {/* Order type badge */}
                         {orderType !== "dine_in" && typeConfig && (
                           <span className={`flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded ${typeConfig.color}`}>
                             <TypeIcon className="w-3 h-3" />
                             {typeConfig.label}
+                          </span>
+                        )}
+                        {/* Outlet badge in consolidated view */}
+                        {isConsolidated && outletNameMap.get(order.outlet_id) && (
+                          <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+                            {outletNameMap.get(order.outlet_id)}
                           </span>
                         )}
                       </div>
@@ -493,6 +550,18 @@ export default function OrdersPage() {
                       Details
                     </Button>
                     <div className="flex-1" />
+                    {(status === "completed" || status === "cancelled") &&
+                      order.payment_status !== "refunded" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openRefundDialog(order)}
+                        className="text-xs text-red-500 hover:text-red-700 hover:bg-red-50"
+                      >
+                        <Ban className="w-3.5 h-3.5 mr-1" />
+                        Refund
+                      </Button>
+                    )}
                     {status !== "cancelled" && status !== "completed" && (
                       <Button
                         variant="ghost"
@@ -671,13 +740,12 @@ export default function OrdersPage() {
               {/* Actions */}
               <div className="flex gap-2">
                 {(detailOrder.status === "completed" || detailOrder.status === "cancelled") &&
-                  detailOrder.payment_status !== "refunded" &&
-                  detailOrder.payment_status === "paid" && (
+                  detailOrder.payment_status !== "refunded" && (
                   <Button
                     variant="outline"
                     className="flex-1 text-red-500 border-red-200 hover:bg-red-50"
                     onClick={() => {
-                      setRefundOrderId(detailOrder.id);
+                      openRefundDialog(detailOrder);
                       setDetailOrder(null);
                     }}
                   >
@@ -754,26 +822,95 @@ export default function OrdersPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Refund Dialog (B4) */}
-      <Dialog open={!!refundOrderId} onOpenChange={() => setRefundOrderId(null)}>
-        <DialogContent className="max-w-sm">
+      {/* Enhanced Refund Dialog */}
+      <Dialog open={!!refundOrder} onOpenChange={() => setRefundOrder(null)}>
+        <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Record Refund</DialogTitle>
+            <DialogTitle>Process Refund — Order #{refundOrder?.order_number}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            <p className="text-sm text-gray-500">Are you sure you want to record a refund for this order?</p>
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => setRefundOrderId(null)}>
-                Cancel
-              </Button>
-              <Button
-                className="flex-1 bg-red-600 hover:bg-red-700 text-white"
-                onClick={refundOrder}
-              >
-                Record Refund
-              </Button>
+          {refundOrder && (
+            <div className="space-y-4">
+              {/* Refund Type Toggle */}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setRefundType("full")}
+                  className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                    refundType === "full"
+                      ? "bg-red-50 border-red-300 text-red-700"
+                      : "bg-white border-gray-200 text-gray-600"
+                  }`}
+                >
+                  Full Refund
+                </button>
+                <button
+                  onClick={() => setRefundType("partial")}
+                  className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                    refundType === "partial"
+                      ? "bg-red-50 border-red-300 text-red-700"
+                      : "bg-white border-gray-200 text-gray-600"
+                  }`}
+                >
+                  Partial Refund
+                </button>
+              </div>
+
+              {/* Item selection for partial refund */}
+              {refundType === "partial" && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-gray-700">Select items to refund:</p>
+                  {refundOrder.order_items.map((item) => (
+                    <label key={item.id} className="flex items-center gap-3 bg-gray-50 rounded-lg p-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={refundSelectedItems.has(item.id)}
+                        onChange={(e) => {
+                          const newSet = new Set(refundSelectedItems);
+                          if (e.target.checked) newSet.add(item.id);
+                          else newSet.delete(item.id);
+                          setRefundSelectedItems(newSet);
+                        }}
+                        className="rounded border-gray-300"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium">{item.quantity}x {item.item_name}</p>
+                      </div>
+                      <span className="text-sm font-bold">RM {Number(item.subtotal).toFixed(2)}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              {/* Refund amount */}
+              <div className="bg-red-50 rounded-lg p-3 text-center">
+                <p className="text-xs text-red-600">Refund Amount</p>
+                <p className="text-2xl font-bold text-red-700">RM {getRefundAmount().toFixed(2)}</p>
+              </div>
+
+              {/* Reason */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Reason *</label>
+                <Textarea
+                  value={refundReason}
+                  onChange={(e) => setRefundReason(e.target.value)}
+                  placeholder="e.g. Wrong order, food quality issue..."
+                  rows={2}
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <Button variant="outline" className="flex-1" onClick={() => setRefundOrder(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                  onClick={processRefund}
+                  disabled={!refundReason.trim() || getRefundAmount() <= 0}
+                >
+                  Process Refund
+                </Button>
+              </div>
             </div>
-          </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

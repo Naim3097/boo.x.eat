@@ -30,13 +30,23 @@ import {
 } from "lucide-react";
 import type { Category, MenuItem, Variant } from "@/types/database";
 
+interface OutletMenuOverride {
+  id: string;
+  outlet_id: string;
+  menu_item_id: string;
+  is_available: boolean;
+  price_override: number | null;
+}
+
 export default function MenuPage() {
-  const { store, loading: storeLoading } = useStore();
+  const { store, outlet, outlets, loading: storeLoading } = useStore();
   const [categories, setCategories] = useState<Category[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
+  const [overrides, setOverrides] = useState<OutletMenuOverride[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [menuScope, setMenuScope] = useState<"store" | "outlet">("store");
 
   // Category dialog state
   const [catDialogOpen, setCatDialogOpen] = useState(false);
@@ -73,7 +83,8 @@ export default function MenuPage() {
     if (!store) return;
     const supabase = createClient();
 
-    const [catRes, itemRes, varRes] = await Promise.all([
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const queries: any[] = [
       supabase
         .from("categories")
         .select("*")
@@ -91,13 +102,33 @@ export default function MenuPage() {
         .select("*")
         .order("sort_order", { ascending: true })
         .returns<Variant[]>(),
-    ]);
+    ];
+
+    // Load outlet overrides if viewing outlet scope
+    if (outlet) {
+      queries.push(
+        supabase
+          .from("outlet_menu_overrides")
+          .select("*")
+          .eq("outlet_id", outlet.id)
+      );
+    }
+
+    const results = await Promise.all(queries);
+    const [catRes, itemRes, varRes, overrideRes] = results as [
+      { data: Category[] | null },
+      { data: MenuItem[] | null },
+      { data: Variant[] | null },
+      { data: OutletMenuOverride[] | null } | undefined,
+    ];
 
     if (catRes.data) setCategories(catRes.data);
     if (itemRes.data) setMenuItems(itemRes.data);
     if (varRes.data) setVariants(varRes.data);
+    if (overrideRes?.data) setOverrides(overrideRes.data);
+    else setOverrides([]);
     setLoading(false);
-  }, [store]);
+  }, [store, outlet]);
 
   useEffect(() => {
     if (store) loadData();
@@ -444,6 +475,44 @@ export default function MenuPage() {
     loadData();
   }
 
+  // ========== OUTLET OVERRIDES ==========
+
+  function getOverride(menuItemId: string): OutletMenuOverride | undefined {
+    return overrides.find((o) => o.menu_item_id === menuItemId);
+  }
+
+  async function toggleOutletAvailability(menuItemId: string) {
+    if (!outlet) return;
+    const supabase = createClient();
+    const existing = getOverride(menuItemId);
+    const newAvailable = existing ? !existing.is_available : false;
+
+    const { error } = await supabase
+      .from("outlet_menu_overrides")
+      .upsert(
+        { outlet_id: outlet.id, menu_item_id: menuItemId, is_available: newAvailable },
+        { onConflict: "outlet_id,menu_item_id" }
+      );
+    if (error) { toast.error(error.message); return; }
+    loadData();
+  }
+
+  async function _setOutletPriceOverride(menuItemId: string, price: string) {
+    if (!outlet) return;
+    const supabase = createClient();
+    const priceVal = price ? parseFloat(price) : null;
+
+    const { error } = await supabase
+      .from("outlet_menu_overrides")
+      .upsert(
+        { outlet_id: outlet.id, menu_item_id: menuItemId, price_override: priceVal },
+        { onConflict: "outlet_id,menu_item_id" }
+      );
+    if (error) { toast.error(error.message); return; }
+    toast.success("Price override saved");
+    loadData();
+  }
+
   // Filter items by selected category
   const filteredItems = selectedCategory
     ? menuItems.filter((i) => i.category_id === selectedCategory)
@@ -466,13 +535,35 @@ export default function MenuPage() {
             Manage categories, menu items, and variants for your restaurant.
           </p>
         </div>
-        <Button
-          onClick={() => openItemDialog()}
-          className="bg-gradient-to-r from-primary-700 to-primary-500 hover:from-primary-600 hover:to-primary-400"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Add Item
-        </Button>
+        <div className="flex items-center gap-3">
+          {outlet && outlets.length > 1 && (
+            <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+              <button
+                onClick={() => setMenuScope("store")}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  menuScope === "store" ? "bg-white shadow text-gray-900" : "text-gray-500"
+                }`}
+              >
+                Store-wide
+              </button>
+              <button
+                onClick={() => setMenuScope("outlet")}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  menuScope === "outlet" ? "bg-white shadow text-gray-900" : "text-gray-500"
+                }`}
+              >
+                This Outlet
+              </button>
+            </div>
+          )}
+          <Button
+            onClick={() => openItemDialog()}
+            className="bg-gradient-to-r from-primary-700 to-primary-500 hover:from-primary-600 hover:to-primary-400"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Add Item
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -610,18 +701,33 @@ export default function MenuPage() {
                         </p>
                       )}
                       <div className="flex items-center justify-between pt-2 border-t">
-                        <button
-                          onClick={() => toggleAvailability(item)}
-                          className={`flex items-center gap-1.5 text-xs font-medium ${
-                            item.is_available ? "text-green-600" : "text-red-500"
-                          }`}
-                        >
-                          {item.is_available ? (
-                            <><ToggleRight className="w-4 h-4" /> Available</>
-                          ) : (
-                            <><ToggleLeft className="w-4 h-4" /> Unavailable</>
-                          )}
-                        </button>
+                        {menuScope === "outlet" && outlet ? (
+                          <button
+                            onClick={() => toggleOutletAvailability(item.id)}
+                            className={`flex items-center gap-1.5 text-xs font-medium ${
+                              (getOverride(item.id)?.is_available ?? true) ? "text-green-600" : "text-red-500"
+                            }`}
+                          >
+                            {(getOverride(item.id)?.is_available ?? true) ? (
+                              <><ToggleRight className="w-4 h-4" /> Available here</>
+                            ) : (
+                              <><ToggleLeft className="w-4 h-4" /> Hidden here</>
+                            )}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => toggleAvailability(item)}
+                            className={`flex items-center gap-1.5 text-xs font-medium ${
+                              item.is_available ? "text-green-600" : "text-red-500"
+                            }`}
+                          >
+                            {item.is_available ? (
+                              <><ToggleRight className="w-4 h-4" /> Available</>
+                            ) : (
+                              <><ToggleLeft className="w-4 h-4" /> Unavailable</>
+                            )}
+                          </button>
+                        )}
                         <div className="flex items-center gap-1">
                           <button
                             onClick={() => moveItemUp(item)}

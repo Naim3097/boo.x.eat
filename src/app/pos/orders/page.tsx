@@ -488,6 +488,30 @@ export default function POSOrdersPage() {
                           Cancel
                         </button>
                       )}
+                      {(order.status === "completed" || order.status === "cancelled") &&
+                        order.payment_status === "paid" && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // Simple refund for POS
+                            const supabase = createClient();
+                            supabase.from("refunds").insert({
+                              order_id: order.id,
+                              amount: Number(order.total),
+                              reason: "POS refund",
+                              refund_type: "full",
+                            }).then(() => {
+                              supabase.from("orders").update({ payment_status: "refunded" }).eq("id", order.id).then(() => {
+                                toast.success("Refund processed");
+                                loadOrders();
+                              });
+                            });
+                          }}
+                          className="px-4 py-2 rounded-lg border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50 transition-colors"
+                        >
+                          Refund
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

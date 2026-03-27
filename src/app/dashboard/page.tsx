@@ -4,38 +4,80 @@ import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/hooks/use-store";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ShoppingCart, DollarSign, Users, TrendingUp, Loader2, Clock } from "lucide-react";
+import { ShoppingCart, DollarSign, Users, TrendingUp, Loader2, Clock, AlertTriangle, Package } from "lucide-react";
 import type { Order } from "@/types/database";
 
+interface LowStockItem {
+  id: string;
+  name: string;
+  current_stock: number;
+  low_stock_threshold: number;
+  unit: string;
+}
+
 export default function DashboardPage() {
-  const { outlet, loading: storeLoading } = useStore();
+  const { store, outlet, outlets, tierLimits, loading: storeLoading } = useStore();
   const [loading, setLoading] = useState(true);
   const [todayOrders, setTodayOrders] = useState(0);
   const [todayRevenue, setTodayRevenue] = useState(0);
   const [activeTables, setActiveTables] = useState(0);
   const [avgOrderValue, setAvgOrderValue] = useState(0);
   const [recentOrders, setRecentOrders] = useState<(Order & { tables: { table_number: string } | null })[]>([]);
+  const [lowStockItems, setLowStockItems] = useState<LowStockItem[]>([]);
 
   const loadDashboard = useCallback(async () => {
-    if (!outlet) return;
+    if (!store) return;
     const supabase = createClient();
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const [ordersRes, tablesRes] = await Promise.all([
-      supabase
-        .from("orders")
-        .select("*, tables(table_number)")
-        .eq("outlet_id", outlet.id)
-        .gte("created_at", today.toISOString())
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("tables")
-        .select("id, status")
-        .eq("outlet_id", outlet.id)
-        .eq("status", "occupied"),
-    ]);
+    // Build query based on whether viewing single outlet or all
+    let ordersQuery = supabase
+      .from("orders")
+      .select("*, tables(table_number)")
+      .gte("created_at", today.toISOString())
+      .order("created_at", { ascending: false });
+
+    let tablesQuery = supabase
+      .from("tables")
+      .select("id, status")
+      .eq("status", "occupied");
+
+    if (outlet) {
+      ordersQuery = ordersQuery.eq("outlet_id", outlet.id);
+      tablesQuery = tablesQuery.eq("outlet_id", outlet.id);
+    } else {
+      // All outlets for this store
+      const outletIds = outlets.map((o) => o.id);
+      if (outletIds.length > 0) {
+        ordersQuery = ordersQuery.in("outlet_id", outletIds);
+        tablesQuery = tablesQuery.in("outlet_id", outletIds);
+      }
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const queries: any[] = [ordersQuery, tablesQuery];
+
+    // Load low stock items if inventory feature is available
+    if (tierLimits.hasInventory) {
+      let invQuery = supabase
+        .from("inventory_items")
+        .select("id, name, current_stock, low_stock_threshold, unit");
+      if (outlet) {
+        invQuery = invQuery.eq("outlet_id", outlet.id);
+      } else {
+        const outletIds = outlets.map((o) => o.id);
+        if (outletIds.length > 0) invQuery = invQuery.in("outlet_id", outletIds);
+      }
+      queries.push(invQuery);
+    }
+
+    const results = await Promise.all(queries);
+    const [ordersRes, tablesRes] = results as [
+      { data: (Order & { tables: { table_number: string } | null })[] | null },
+      { data: { id: string; status: string }[] | null },
+    ];
 
     const orders = (ordersRes.data || []) as (Order & { tables: { table_number: string } | null })[];
     const validOrders = orders.filter((o) => o.status !== "cancelled");
@@ -46,29 +88,51 @@ export default function DashboardPage() {
     setAvgOrderValue(validOrders.length > 0 ? revenue / validOrders.length : 0);
     setActiveTables(tablesRes.data?.length || 0);
     setRecentOrders(orders.slice(0, 5));
+
+    // Low stock items
+    if (tierLimits.hasInventory && results[2]) {
+      const invRes = results[2] as { data: LowStockItem[] | null };
+      const allItems = invRes.data || [];
+      setLowStockItems(allItems.filter((i) => Number(i.current_stock) <= Number(i.low_stock_threshold)));
+    }
+
     setLoading(false);
-  }, [outlet]);
+  }, [store, outlet, outlets, tierLimits]);
 
   useEffect(() => {
-    if (outlet) loadDashboard();
-  }, [outlet, loadDashboard]);
+    if (store) loadDashboard();
+  }, [store, loadDashboard]);
 
   // Real-time updates
   useEffect(() => {
-    if (!outlet) return;
+    if (!store) return;
     const supabase = createClient();
-    const channel = supabase
-      .channel("dashboard-realtime")
-      .on("postgres_changes", {
+    const channelFilter = outlet
+      ? `outlet_id=eq.${outlet.id}`
+      : undefined;
+
+    let channel = supabase.channel("dashboard-realtime");
+    if (channelFilter) {
+      channel = channel.on("postgres_changes", {
         event: "*",
         schema: "public",
         table: "orders",
-        filter: `outlet_id=eq.${outlet.id}`,
-      }, () => { loadDashboard(); })
-      .subscribe();
+        filter: channelFilter,
+      }, () => { loadDashboard(); });
+    } else {
+      channel = channel.on("postgres_changes", {
+        event: "*",
+        schema: "public",
+        table: "orders",
+      }, () => { loadDashboard(); });
+    }
+    channel.subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [outlet, loadDashboard]);
+  }, [store, outlet, loadDashboard]);
+
+  const _isConsolidated = !outlet && outlets.length > 1;
+  const _outletNameMap = new Map(outlets.map((o) => [o.id, o.name]));
 
   if (storeLoading || loading) {
     return (
@@ -160,6 +224,39 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Low Stock Alerts */}
+      {lowStockItems.length > 0 && (
+        <Card className="border-amber-200 bg-amber-50/50">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+              <CardTitle className="text-base">Low Stock Alerts</CardTitle>
+              <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+                {lowStockItems.length} item{lowStockItems.length > 1 ? "s" : ""}
+              </span>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {lowStockItems.slice(0, 5).map((item) => (
+                <div key={item.id} className="flex items-center justify-between py-1.5">
+                  <div className="flex items-center gap-2">
+                    <Package className="w-4 h-4 text-amber-500" />
+                    <span className="text-sm font-medium text-gray-900">{item.name}</span>
+                  </div>
+                  <span className={`text-sm font-bold ${Number(item.current_stock) <= 0 ? "text-red-600" : "text-amber-600"}`}>
+                    {Number(item.current_stock).toFixed(1)} {item.unit}
+                  </span>
+                </div>
+              ))}
+              {lowStockItems.length > 5 && (
+                <p className="text-xs text-amber-600">+{lowStockItems.length - 5} more items</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Recent Orders */}
       <Card>

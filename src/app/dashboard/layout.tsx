@@ -12,24 +12,43 @@ import {
   Settings,
   LogOut,
   Menu,
+  Building2,
+  Package,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { OutletSwitcher } from "@/components/ui/outlet-switcher";
 import { createClient } from "@/lib/supabase/client";
+import { useStore } from "@/hooks/use-store";
 import { cn } from "@/lib/utils";
 
-const sidebarNav = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: React.ElementType;
+  requireFeature?: string;
+}
+
+const baseNav: NavItem[] = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/orders", label: "Orders", icon: ShoppingCart },
   { href: "/dashboard/menu", label: "Menu", icon: UtensilsCrossed },
   { href: "/dashboard/tables", label: "Tables", icon: Grid3X3 },
   { href: "/dashboard/staff", label: "Staff", icon: Users },
+  { href: "/dashboard/outlets", label: "Outlets", icon: Building2 },
+  { href: "/dashboard/inventory", label: "Inventory", icon: Package, requireFeature: "hasInventory" },
   { href: "/dashboard/reports", label: "Reports", icon: BarChart3 },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
 function SidebarContent({ pathname }: { pathname: string }) {
   const router = useRouter();
+  const { outlets, outlet, setActiveOutlet, tierLimits } = useStore();
+
+  const sidebarNav = baseNav.filter((item) => {
+    if (!item.requireFeature) return true;
+    return (tierLimits as unknown as Record<string, unknown>)[item.requireFeature] === true;
+  });
 
   async function handleLogout() {
     const supabase = createClient();
@@ -50,6 +69,17 @@ function SidebarContent({ pathname }: { pathname: string }) {
           </span>
         </Link>
       </div>
+
+      {/* Outlet Switcher */}
+      <div className="px-3 pb-3">
+        <OutletSwitcher
+          outlets={outlets}
+          activeOutlet={outlet}
+          onSwitch={setActiveOutlet}
+          showAllOption={tierLimits.hasMultiOutlet && outlets.length > 1}
+        />
+      </div>
+
       <nav className="flex-1 px-3 py-2 space-y-1">
         {sidebarNav.map((item) => {
           const isActive =

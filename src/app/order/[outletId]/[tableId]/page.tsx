@@ -159,7 +159,7 @@ export default function OrderPage() {
         setTaxRate(Number((storeData as { tax_rate: number | null }).tax_rate));
       }
 
-      const [catRes, itemRes, varRes] = await Promise.all([
+      const [catRes, itemRes, varRes, overrideRes] = await Promise.all([
         supabase
           .from("categories")
           .select("*")
@@ -180,10 +180,34 @@ export default function OrderPage() {
           .eq("is_available", true)
           .order("sort_order", { ascending: true })
           .returns<Variant[]>(),
+        supabase
+          .from("outlet_menu_overrides")
+          .select("*")
+          .eq("outlet_id", outletId),
       ]);
 
       if (catRes.data) setCategories(catRes.data);
-      if (itemRes.data) setMenuItems(itemRes.data);
+
+      // Apply outlet overrides to menu items
+      let items = itemRes.data || [];
+      const overrides = (overrideRes.data || []) as { menu_item_id: string; is_available: boolean; price_override: number | null }[];
+      if (overrides.length > 0) {
+        const overrideMap = new Map(overrides.map((o) => [o.menu_item_id, o]));
+        items = items
+          .filter((item) => {
+            const override = overrideMap.get(item.id);
+            return !override || override.is_available;
+          })
+          .map((item) => {
+            const override = overrideMap.get(item.id);
+            if (override?.price_override != null) {
+              return { ...item, base_price: override.price_override };
+            }
+            return item;
+          });
+      }
+      setMenuItems(items);
+
       if (varRes.data) setVariants(varRes.data);
 
       // Check for existing active order for this table (B10)

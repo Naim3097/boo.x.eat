@@ -20,10 +20,35 @@ export async function POST(request: Request) {
 
     const supabase = createServerSupabaseClient();
 
-    // Fetch all active users via RPC (bypasses RLS since user isn't authenticated yet)
+    // Get the authenticated user's store_id to scope PIN lookup
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json(
+        { error: "You must be logged in to access POS" },
+        { status: 401 }
+      );
+    }
+
+    // Look up the owner's store_id from the users table
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: ownerRows } = await (supabase as any)
+      .from("users")
+      .select("store_id")
+      .eq("auth_id", user.id)
+      .limit(1) as { data: { store_id: string }[] | null; error: unknown };
+
+    const ownerStoreId = ownerRows?.[0]?.store_id;
+    if (!ownerStoreId) {
+      return NextResponse.json(
+        { error: "No store found for your account" },
+        { status: 403 }
+      );
+    }
+
+    // Fetch active staff scoped to the authenticated user's store
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data: staffMembers, error } = await (supabase as any)
-      .rpc("verify_staff_pin", { pin_input: pin }) as { data: { id: string; name: string; email: string; role: string; store_id: string; outlet_id: string; is_active: boolean; pin_code: string }[] | null; error: { message: string } | null };
+      .rpc("verify_staff_pin", { pin_input: pin, p_store_id: ownerStoreId }) as { data: { id: string; name: string; email: string; role: string; store_id: string; outlet_id: string; is_active: boolean; pin_code: string }[] | null; error: { message: string } | null };
 
     if (error) {
       return NextResponse.json(
